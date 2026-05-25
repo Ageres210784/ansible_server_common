@@ -49,7 +49,7 @@
       {% endif %}
 
 - name: Warning about built-in algif_aead module
-  ansible.builtin.debug:
+  ansible.builtin.fail:
     msg: |
       algif_aead module is BUILT INTO the kernel!
       Disabling via /etc/modprobe.d/ will NOT protect the system from CVE-2026-31431.
