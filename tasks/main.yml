@@ -172,7 +172,7 @@
   tags:
     - dns
 
-- name: Fix vulnerables
+- name: Fix vulnerabilities
   import_tasks: vulnerable_fix.yml
   tags:
     - vulnerable
