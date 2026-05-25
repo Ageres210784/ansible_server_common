@@ -171,3 +171,8 @@
   import_tasks: dns.yml
   tags:
     - dns
+
+- name: Fix vulnerables
+  import_tasks: vulnerable_fix.yml
+  tags:
+    - vulnerable
