@@ -1,0 +1,129 @@
+---
+- name: Set variables for mitigation
+  ansible.builtin.set_fact:
+    copyfail_modules: ['algif_aead']
+    dirtyfrag_modules: ['esp4', 'esp6', 'rxrpc']
+    copyfail_conf_file: '/etc/modprobe.d/99-cve-2026-31431.conf'
+    dirtyfrag_conf_file: '/etc/modprobe.d/99-cve-2026-43284-43500.conf'
+
+- name: Check status of vulnerable modules
+  become: true
+  ansible.builtin.shell: |
+    set -o pipefail
+    lsmod | grep -E '^{{ item }}$' && echo "loaded" || echo "not_loaded"
+  args:
+    executable: /bin/bash
+  loop: "{{ copyfail_modules + dirtyfrag_modules }}"
+  register: module_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Determine algif_aead module architecture
+  ansible.builtin.shell: |
+    zgrep '^CONFIG_CRYPTO_USER_API_AEAD=' /boot/config-$(uname -r) 2>/dev/null | cut -d'=' -f2 || echo "unknown"
+  args:
+    executable: /bin/bash
+  register: algif_aead_config
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Display modele statuses
+  ansible.builtin.debug:
+    msg: |
+      === Vulnerable modules status ===
+      {% for item in module_status.results %}
+      - {{ item.item }}: {{ item.stdout }}
+      {% endfor %}
+      === algif_aead status ===
+      Module configuration: {{ algif_aead_config.stdout }}
+      {% if algif_aead_config.stdout == 'y' %}
+      algif_aead module is built into the kernel.
+      Standard disabling via /etc/modprobe.d/ will NOT work.
+      Requires kernel boot parameter 'initcall_blacklist=algif_aead_init' and reboot.
+      {% elif algif_aead_config.stdout == 'm' %}
+      algif_aead module is loadable. Standard disabling is possible.
+      {% else %}
+      Failed to determine algif_aead module configuration.
+      {% endif %}
+
+- name: Warning about built-in algif_aead module
+  ansible.builtin.fail:
+    msg: |
+      algif_aead module is BUILT INTO the kernel!
+      Disabling via /etc/modprobe.d/ will NOT protect the system from CVE-2026-31431.
+      Mitigation requires adding 'initcall_blacklist=algif_aead_init' to the kernel command line and rebooting.
+      It is also recommended to install the official kernel update from your distribution.
+  when: algif_aead_config.stdout == 'y'
+
+- name: Block vulnerable module loading (Copy Fail - CVE-2026-31431)
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ copyfail_conf_file }}"
+    content: |
+      # Ansible: Block algif_aead module (CVE-2026-31431 - Copy Fail)
+      install algif_aead /bin/false
+    mode: '0644'
+  when: algif_aead_config.stdout != 'y'
+
+- name: Block vulnerable module loading (Dirty Frag - CVE-2026-43284, CVE-2026-43500)
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ dirtyfrag_conf_file }}"
+    content: |
+      # Ansible: Block esp4, esp6, rxrpc modules (CVE-2026-43284, CVE-2026-43500 - Dirty Frag)
+      install esp4 /bin/false
+      install esp6 /bin/false
+      install rxrpc /bin/false
+    mode: '0644'
+
+- name: Unload vulnerable modules
+  become: true
+  ansible.builtin.modprobe:
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ copyfail_modules + dirtyfrag_modules }}"
+  when: not (item == 'algif_aead' and algif_aead_config.stdout == 'y')
+  ignore_errors: true
+  register: rmmod_result
+
+- name: Display unload results
+  ansible.builtin.debug:
+    msg: |
+      Unload result for module {{ item.item }}:
+      {% if item.failed %}
+      ERROR: {{ item.msg }}
+      {% else %}
+      Module successfully unloaded or was not loaded.
+      {% endif %}
+  loop: "{{ rmmod_result.results }}"
+  when: rmmod_result.results is defined
+
+- name: Check if initramfs updates are required
+  ansible.builtin.set_fact:
+    reboot_required: true
+  when: rmmod_result is changed or (algif_aead_config.stdout == 'm')
+
+- name: Final recommendations
+  ansible.builtin.debug:
+    msg: |
+      ===========================================
+      MITIGATION COMPLETED
+      ===========================================
+
+      {% if algif_aead_config.stdout == 'y' %}
+      CRITICAL WARNING
+      algif_aead module is BUILT INTO your kernel. Standard mitigation via modprobe.d is NOT APPLICABLE.
+      YOUR ACTIONS:
+      1. IMMEDIATELY add 'initcall_blacklist=algif_aead_init' to the kernel command line
+          (see your bootloader documentation for instructions).
+      2. Reboot the system.
+      {% elif reboot_required %}
+      REBOOT REQUIRED
+      To fully apply mitigations and clear the page cache, a system reboot is strongly recommended.
+      {% else %}
+      REBOOT REQUIRED
+      To fully apply mitigations and clear the page cache, a system reboot is strongly recommended.
+      {% endif %}
+  when: reboot_required or algif_aead_config.stdout == 'y'
